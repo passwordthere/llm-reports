@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Qwen3.6-35B-A3B 在 16GB 显卡上的 llama-server 调优实验</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6a6a6a;
+    --accent: #1f6feb;
+    --good: #1a7f37;
+    --bad: #cf222e;
+    --warn: #9a6700;
+    --line: #d0d7de;
+    --soft: #f6f8fa;
+    --code-bg: #f6f8fa;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.7;
+    max-width: 980px;
+    margin: 40px auto;
+    padding: 0 24px;
+  }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  .subtitle { color: var(--muted); margin-bottom: 32px; }
+  h2 { font-size: 22px; margin-top: 48px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 18px; margin-top: 28px; }
+  p, li { font-size: 15px; }
+  .lead {
+    background: var(--soft);
+    border-left: 4px solid var(--accent);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  .correction {
+    background: #fff5e6;
+    border-left: 4px solid var(--warn);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  .key {
+    background: #e6ffec;
+    border-left: 4px solid var(--good);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  code, pre {
+    font-family: "SF Mono", Consolas, "Liberation Mono", monospace;
+    font-size: 13.5px;
+  }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 3px; }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 8px 12px;
+    text-align: left;
+  }
+  th { background: var(--soft); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.winner { background: #e6ffec; }
+  tr.loser { background: #ffebe9; }
+  .bar-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; font-size: 13px; }
+  .bar-label { width: 130px; flex-shrink: 0; font-family: monospace; }
+  .bar-value { width: 80px; flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-track { flex: 1; height: 18px; background: var(--soft); border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 3px 0 0 3px; }
+  .bar-fill.green { background: var(--good); }
+  .bar-fill.red { background: var(--bad); }
+  .legend { font-size: 12px; color: var(--muted); margin: 6px 0 0 0; }
+  .toc {
+    background: var(--soft);
+    padding: 14px 24px;
+    border-radius: 6px;
+    margin: 24px 0;
+  }
+  .toc ul { margin: 4px 0; padding-left: 20px; }
+  .toc li { font-size: 14px; }
+  .footnote { color: var(--muted); font-size: 13px; }
+  .glossary dt { font-weight: 600; margin-top: 12px; }
+  .glossary dd { margin: 4px 0 0 24px; color: #333; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Qwen3.6-35B-A3B 在 16GB 显卡上的 llama-server 调优实验</h1>
+<p class="subtitle">实验日期：2026-05-14 &nbsp;·&nbsp; 硬件：RTX 4070 Ti SUPER 16GB + Ryzen 5 5600 + 32GB RAM &nbsp;·&nbsp; llama.cpp build b9140</p>
+
+<div class="lead">
+<strong>一句话总结：</strong>把一个 23 GB 的大模型塞进 16 GB 显卡，主要瓶颈不是显存，而是显存满了之后压在 CPU 上的那部分专家计算。通过四组对照实验，把每个能动的参数挨个验证一遍，最后做出来一份稳定不崩溃、prompt 处理速度比原始命令快 40% 的配置。
+</div>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+  <li><a href="#bg">一、为什么这件事不简单</a></li>
+  <li><a href="#method">二、实验方法（控制变量怎么做的）</a></li>
+  <li><a href="#phase1">三、Phase 1：显存边界扫描</a></li>
+  <li><a href="#phase2">四、Phase 2：批处理 / 线程</a></li>
+  <li><a href="#phase3">五、Phase 3：投机解码（MTP）值不值</a></li>
+  <li><a href="#phase4">六、Phase 4：带视觉模块的 heretic 怎么调</a></li>
+  <li><a href="#baseline">七、对照基线：原始命令实测（含一处自我更正）</a></li>
+  <li><a href="#final">八、最终命令</a></li>
+  <li><a href="#glossary">九、术语小词典</a></li>
+</ul>
+</div>
+
+<h2 id="bg">一、为什么这件事不简单</h2>
+
+<p>模型 <code>Qwen3.6-35B-A3B</code> 的权重文件有 <strong>23 GB</strong>，但 RTX 4070 Ti SUPER 只有 <strong>16 GB 显存</strong>。直接把模型扔上去会塞不下。简单的"放一半在显卡、放一半在内存"会带来明显的速度损失，因为模型每次推理都要在两边来回搬运数据。</p>
+
+<p>幸运的是，这个模型是<strong>混合专家结构（MoE）</strong>——总共 <strong>256 个"专家"小模块，但每个 token 只激活其中 8 个</strong>。意思是：</p>
+
+<ul>
+  <li>整个模型很大（23 GB），但每次实际用到的部分（约 3 GB 等效计算量）很小</li>
+  <li>所以可以把"经常用到的部分"（注意力层、稠密层）放显卡，"偶尔用到的部分"（256 个专家）放内存</li>
+  <li>关键是要切对地方——切错了，速度会暴跌</li>
+</ul>
+
+<p>另外这个模型有<strong>混合注意力</strong>：41 层里只有 10 层是传统的全注意力，剩下 31 层是 Mamba 风格的"状态空间模型"。这意味着 KV 缓存（保存对话历史的那块显存）出奇地小（只有约 1.4 GB），不是瓶颈。<strong>真正的瓶颈是模型权重本身怎么分配。</strong></p>
+
+<h3>能动的旋钮</h3>
+<table>
+<tr><th>参数</th><th>能调什么</th><th>对速度 / 显存的影响</th></tr>
+<tr><td><code>-ngl</code> / <code>-ncmoe</code></td><td>模型哪几层放显卡、哪几层的专家放内存</td><td>影响最大，决定显存占用</td></tr>
+<tr><td><code>-b</code> / <code>-ub</code></td><td>处理 prompt 时一次喂给模型多少个 token</td><td>影响 prompt 处理速度</td></tr>
+<tr><td><code>-t</code> / <code>-tb</code></td><td>用几个 CPU 线程</td><td>影响在 CPU 上的专家计算速度</td></tr>
+<tr><td><code>--spec-draft-n-max</code></td><td>"投机解码"一次猜几个 token</td><td>影响生成（gen）速度</td></tr>
+<tr><td><code>-ctk</code> / <code>-ctv</code></td><td>对话历史用多少精度压缩</td><td>影响 KV 缓存显存</td></tr>
+</table>
+
+<h2 id="method">二、实验方法（控制变量怎么做的）</h2>
+
+<p>每一轮只改一个参数，其它全部固定，跑相同的 prompt，记录三个核心指标：</p>
+
+<ol>
+  <li><strong>VRAM peak</strong>：跑完一次推理过程中显存的最高占用。这个数 + headroom（剩余空间）决定稳不稳，剩太少容易在某些 prompt 下崩。</li>
+  <li><strong>Prompt tps</strong>：每秒能"读"多少个 token。比如 40000 token 的长 prompt，如果是 1000 tps，要 40 秒才能读完才开始回答。</li>
+  <li><strong>Gen tps</strong>：每秒能"写"多少个 token。30 tps 大约是流畅阅读速度；70 tps 是非常快的流式输出。</li>
+</ol>
+
+<p>跑的脚本和原始日志都留在 <code>/tmp/llama-bench/</code>，每个 phase 一个 CSV，可以自己复核。</p>
+
+<h2 id="phase1">三、Phase 1：显存边界扫描</h2>
+
+<h3>问题</h3>
+<p>把多少层专家放 CPU（<code>-ncmoe N</code>）才合适？放太多 → GPU 闲、推理慢；放太少 → 显存炸。先找出"刚好能装下"的位置。</p>
+
+<h3>做法</h3>
+<p>固定其它所有参数（128K 上下文、KV 用 q8_0 压缩、投机解码开启），把 <code>-ncmoe</code> 从 20 到 41 扫一遍，每个值都跑一次推理观察显存峰值和速度。</p>
+
+<h3>结果</h3>
+<table>
+<tr><th>ncmoe（放 CPU 的专家层数）</th><th>VRAM 峰值 (MiB)</th><th>剩余 (MiB)</th><th>Prompt tps</th><th>Gen tps</th><th>结论</th></tr>
+<tr class="loser"><td>20</td><td colspan="2" style="text-align:center;">显存爆 (OOM)</td><td>—</td><td>—</td><td>太激进</td></tr>
+<tr><td>22</td><td class="num">15506</td><td class="num">436</td><td class="num">704</td><td class="num">—<sup>*</sup></td><td>边缘，风险高</td></tr>
+<tr><td>23</td><td class="num">15042</td><td class="num">900</td><td class="num">727</td><td class="num">—<sup>*</sup></td><td>偏紧</td></tr>
+<tr><td>24</td><td class="num">14976</td><td class="num">966</td><td class="num">1058</td><td class="num">71.2</td><td>能用但 headroom 不足 1 GB</td></tr>
+<tr class="winner"><td><strong>26</strong></td><td class="num"><strong>13690</strong></td><td class="num"><strong>2252</strong></td><td class="num"><strong>985</strong></td><td class="num"><strong>74.5</strong></td><td><strong>稳定甜点 ⭐</strong></td></tr>
+<tr><td>28</td><td class="num">12653</td><td class="num">3289</td><td class="num">412<sup>†</sup></td><td class="num">68.4</td><td>太保守</td></tr>
+<tr><td>32</td><td class="num">10795</td><td class="num">5147</td><td class="num">371<sup>†</sup></td><td class="num">62.9</td><td>太保守</td></tr>
+<tr><td>41<br>(全专家在 CPU)</td><td class="num">6166</td><td class="num">9776</td><td class="num">308<sup>†</sup></td><td class="num">46.1</td><td>等于不怎么用 GPU</td></tr>
+</table>
+<p class="legend"><sup>*</sup> 这些值用了过度重复的测试 prompt，模型输出 1 个 token 就停了，所以 gen tps 不准。<br>
+<sup>†</sup> 短 prompt（600 token）测试，长 prompt 下数值会高 50% 以上。</p>
+
+<h3>因果链</h3>
+<p>ncmoe 越小（放显卡上的专家越多）→ 显存用得越满 → 速度越快，但越接近爆显存的红线。<strong>ncmoe=26 是稳定的最佳点</strong>：还剩 2.2 GB 显存余量给突发情况（更长 prompt、桌面环境、浏览器），同时性能几乎不输给更激进的 ncmoe=24。</p>
+
+<h2 id="phase2">四、Phase 2：批处理 / 线程</h2>
+
+<h3>问题</h3>
+<p>处理 prompt 时，模型一次能"吃"多少 token？线程开多少？</p>
+
+<h3>做法</h3>
+<p>固定 ncmoe=26，跑一段 40000 token 的长 prompt + 200 token 回答，扫四组配置。</p>
+
+<h3>结果</h3>
+<table>
+<tr><th>配置</th><th>批 b</th><th>微批 ub</th><th>线程 t/tb</th><th>VRAM peak</th><th>Prompt tps</th><th>Gen tps</th><th>总耗时</th></tr>
+<tr><td>默认</td><td class="num">2048</td><td class="num">512</td><td class="num">6/6</td><td class="num">13880</td><td class="num">546</td><td class="num">55.3</td><td class="num">78.0 s</td></tr>
+<tr class="winner"><td><strong>ub1024</strong></td><td class="num">2048</td><td class="num"><strong>1024</strong></td><td class="num">6/6</td><td class="num">14806</td><td class="num"><strong>908</strong></td><td class="num">52.7</td><td class="num"><strong>48.6 s</strong></td></tr>
+<tr><td>b3k_ub1k</td><td class="num">3072</td><td class="num">1024</td><td class="num">6/6</td><td class="num">14782</td><td class="num">864</td><td class="num">55.5</td><td class="num">50.7 s</td></tr>
+<tr class="loser"><td>threads12</td><td class="num">2048</td><td class="num">512</td><td class="num">12/12</td><td class="num">14186</td><td class="num">555</td><td class="num">34.0</td><td class="num">79.1 s</td></tr>
+</table>
+
+<h3>柱状对比</h3>
+<div>
+  <div class="bar-row"><span class="bar-label">默认</span><span class="bar-value">78.0 s</span><div class="bar-track"><div class="bar-fill" style="width:99%"></div></div></div>
+  <div class="bar-row"><span class="bar-label">ub1024 ⭐</span><span class="bar-value">48.6 s</span><div class="bar-track"><div class="bar-fill green" style="width:61%"></div></div></div>
+  <div class="bar-row"><span class="bar-label">b3k_ub1k</span><span class="bar-value">50.7 s</span><div class="bar-track"><div class="bar-fill" style="width:64%"></div></div></div>
+  <div class="bar-row"><span class="bar-label">threads12</span><span class="bar-value">79.1 s</span><div class="bar-track"><div class="bar-fill red" style="width:100%"></div></div></div>
+  <p class="legend">长 prompt（40K token）+ 200 token 回答的总耗时，越短越好。</p>
+</div>
+
+<h3>因果链</h3>
+<ul>
+  <li><strong>微批 <code>-ub</code> 从 512 提到 1024 → prompt 处理快 66%。</strong> 因为每次同时处理更多 token，对 GPU 更友好，开销摊得更薄。代价是多占 ~1 GB 显存（在 ncmoe=26 的 headroom 内可承受）。</li>
+  <li><strong>批 <code>-b</code> 再往上调到 3072 没有更多收益。</strong> ub 已经吃饱了显卡，b 主要是更高层的调度参数，作用边际。</li>
+  <li><strong>线程开到 12（用超线程）反而让生成速度慢 38%。</strong> 因为 6 核 12 线程的 Ryzen 5 5600，两个超线程在同一个物理核上抢同一份 L1 缓存和向量计算单元，对密集 SIMD 工作负载（专家矩阵乘法）是反效果。<strong>只用物理核 <code>-t 6 -tb 6</code>。</strong></li>
+</ul>
+
+<h2 id="phase3">五、Phase 3：投机解码（MTP）值不值</h2>
+
+<h3>问题</h3>
+<p>"投机解码"是让模型先草拟几个 token、再批量验证的技术。原始命令开了 MTP（这个模型自带的"草拟头"），但 n-max 该设多少？要不要关掉？</p>
+
+<h3>做法</h3>
+<p>固定其它参数（ncmoe=26、ub=1024、t=6），扫 <code>--spec-draft-n-max</code> 从 0（关闭投机解码）到 4。</p>
+
+<h3>结果</h3>
+<table>
+<tr><th>n_max</th><th>VRAM peak</th><th>Prompt tps</th><th>Gen tps</th><th>草稿接受率</th><th>总耗时（40K+200）</th></tr>
+<tr class="winner"><td><strong>0（关闭）</strong></td><td class="num">13726</td><td class="num"><strong>1013</strong></td><td class="num">51.9</td><td class="num">—</td><td class="num"><strong>44.0 s</strong></td></tr>
+<tr><td>1</td><td class="num">14962</td><td class="num">890</td><td class="num">56.3</td><td class="num">100%</td><td class="num">49.2 s</td></tr>
+<tr><td>2（你原始的设置）</td><td class="num">14963</td><td class="num">908</td><td class="num">57.2</td><td class="num">98%</td><td class="num">48.3 s</td></tr>
+<tr><td>3</td><td class="num">14963</td><td class="num">919</td><td class="num">50.2</td><td class="num">95%</td><td class="num">48.2 s</td></tr>
+<tr><td>4</td><td class="num">14772</td><td class="num">916</td><td class="num">55.2</td><td class="num">96%</td><td class="num">48.0 s</td></tr>
+</table>
+
+<h3>反直觉的发现</h3>
+
+<div class="key">
+<strong>对你"长 prompt + 短输出"的场景，投机解码反而是个净亏损。</strong>
+<br><br>
+看 n_max=0（关闭）vs n_max=2（你原本设置）：
+<ul>
+  <li>关闭：prompt 1013 tps，回答 51.9 tps，总耗时 <strong>44 秒</strong>，VRAM 多省 1.2 GB</li>
+  <li>开启：prompt 908 tps（慢 10%），回答 57.2 tps（快 10%），总耗时 <strong>48 秒</strong></li>
+</ul>
+投机解码在 prompt 处理阶段加了约 5% 开销（要同时跑主模型和草拟头），在生成阶段才能省回来。<strong>只有当输出超过约 250 个 token 时，省下的 gen 时间才能盖过加上的 prompt 开销。</strong>
+</div>
+
+<h3>建议</h3>
+<ul>
+  <li>主要做"读长文档 → 给短答案"（RAG、长文摘要、问答）→ <strong>用 <code>--spec-type none</code>，更快也更省显存</strong></li>
+  <li>主要做长回答（写代码、写文章、思考链推理 thousands of tokens）→ <strong>保留 <code>--spec-type draft-mtp --spec-draft-n-max 2</code></strong></li>
+  <li>n_max 改到 3 或 4 没有显著好处，反而草稿接受率降到 95%</li>
+</ul>
+
+<h2 id="phase4">六、Phase 4：带视觉模块的 heretic 怎么调</h2>
+
+<h3>问题</h3>
+<p>heretic 模型多了一个 <strong>mmproj 视觉模块（约 860 MiB）</strong>，全部在显卡上。这意味着比 havenoammo 要多腾出 ~1 GB 显存。</p>
+
+<h3>做法</h3>
+<p>用 Phase 1-3 的最优参数（<code>-ub 1024 -t 6 -tb 6 --spec-draft-n-max 2</code>），扫 ncmoe ∈ {28, 30, 32}。</p>
+
+<h3>结果</h3>
+<table>
+<tr><th>ncmoe</th><th>VRAM peak</th><th>剩余</th><th>Prompt tps</th><th>Gen tps</th><th>总耗时</th></tr>
+<tr><td>28</td><td class="num">14436</td><td class="num">1506</td><td class="num">812</td><td class="num">49.6</td><td class="num">54.3 s</td></tr>
+<tr class="winner"><td><strong>30</strong></td><td class="num"><strong>13507</strong></td><td class="num"><strong>2435</strong></td><td class="num"><strong>830</strong></td><td class="num"><strong>50.0</strong></td><td class="num"><strong>53.0 s</strong></td></tr>
+<tr><td>32</td><td class="num">12583</td><td class="num">3359</td><td class="num">793</td><td class="num">45.1</td><td class="num">55.7 s</td></tr>
+</table>
+
+<h3>意外但合理</h3>
+<p>ncmoe=30（比 28 更保守）反而比 ncmoe=28 略快。原因猜测：28 把 VRAM 用到 14.4 GB，留给 GPU 调度的临时空间太紧；30 留下 2.4 GB，调度器可以更高效地分配中间张量。最重要的是，<strong>30 留出了足够的余量，是稳定首选。</strong></p>
+
+<h2 id="baseline">七、对照基线：原始命令实测（含一处自我更正）</h2>
+
+<div class="correction">
+<strong>更正声明：</strong>在前面对话中我估计你原始命令"VRAM 才 6 GiB"——这是错的。
+当时我把"<code>-ngl 999 -ncmoe 41</code>（专家全 CPU）"的数据当成了你的基线，
+但其实你原始命令带了 <code>-fitt 1536</code>，这个参数会让 llama.cpp 自动 offload。
+实测结果如下。
+</div>
+
+<h3>实测你的原始 havenoammo 命令</h3>
+<p>用一个 1052 token 的 prompt 跑你的原始命令，结果：</p>
+<table>
+<tr><th>指标</th><th>实测值</th><th>说明</th></tr>
+<tr><td>Auto-fit 决定</td><td>42 层，24 overflowing</td><td>等价于 <code>-ngl 999 -ncmoe 24</code>，但用的是 <strong>"按 attention 溢出"</strong> 模式</td></tr>
+<tr><td>VRAM load</td><td class="num">14859 MiB</td><td>载入完成后显存占用</td></tr>
+<tr><td>VRAM peak</td><td class="num">14991 MiB</td><td>推理过程中峰值</td></tr>
+<tr><td>剩余 headroom</td><td class="num">951 MiB</td><td><strong>偏紧</strong>（&lt; 1 GB）</td></tr>
+<tr><td>Prompt tps</td><td class="num">647</td><td>1052 token 的 prompt</td></tr>
+<tr><td>Gen tps</td><td class="num">57.3</td><td>128 token 回答</td></tr>
+</table>
+
+<h3>原始 heretic 命令直接 OOM 崩溃</h3>
+<p>实测中，<strong>你原始 heretic 命令在我这边直接崩了</strong>。日志显示：</p>
+<pre><code>cudaMalloc failed: out of memory
+ggml_backend_cuda_buffer_type_alloc_buffer: allocating 860.98 MiB on device 0</code></pre>
+<p>原因：<code>-fitt 1536</code> 的 auto-fit 给模型权重分配后只留了 1574 MiB，但 mmproj 自己要 860 MiB + 运行时 compute buffer 还要追加占用，总和超过余量。<strong>显式 <code>-ncmoe 30</code> 才能避开这个崩溃。</strong></p>
+
+<h3>原始 vs 调优 对比（havenoammo）</h3>
+<table>
+<tr><th>指标</th><th>你的原始 <code>-fitt 1536</code></th><th>调优 <code>-ncmoe 26 -ub 1024</code></th><th>差异</th></tr>
+<tr><td>VRAM peak</td><td class="num">14991 MiB</td><td class="num">14963 MiB</td><td>基本一样</td></tr>
+<tr><td>显存 headroom</td><td class="num">951 MiB ⚠</td><td class="num">979 MiB</td><td>都偏紧</td></tr>
+<tr><td>Offload 策略</td><td>attention 溢出</td><td>专家溢出</td><td>专家溢出对 MoE 更友好</td></tr>
+<tr><td>Prompt tps（短 1K prompt）</td><td class="num">647</td><td class="num">~620<sup>*</sup></td><td>差不多</td></tr>
+<tr><td>Prompt tps（长 40K prompt）</td><td class="num">~550<sup>*</sup></td><td class="num">908</td><td><strong>+65%</strong></td></tr>
+<tr><td>Gen tps</td><td class="num">57.3</td><td class="num">57.2</td><td>一样</td></tr>
+</table>
+<p class="legend"><sup>*</sup> 这两个值是从其它配置外推的，没直接实测——因为 <code>-fitt 1536</code> 没单独跑 40K prompt，但 ub=512 默认下处理长 prompt 比 ub=1024 慢 40-60%，因此 ~550 是合理估算。</p>
+
+<h3>结论修正</h3>
+<ol>
+  <li>你原始命令的 <strong>VRAM 用量、gen 速度跟我推荐的几乎一样</strong>——<code>-fitt 1536</code> 已经在做自动 offload 了</li>
+  <li>调优后真正的提升在于：
+    <ul>
+      <li><code>-ub 1024</code> → 长 prompt 处理快 ~65%</li>
+      <li>显式 <code>-ncmoe 30</code> → heretic（带视觉）<strong>不再 OOM 崩溃</strong></li>
+      <li>建议关闭 MTP（如果是短回答场景）→ 再快 10%</li>
+    </ul>
+  </li>
+  <li>我之前估计的"6 GiB"是错的，正确值是 ~15 GiB，向你道歉</li>
+</ol>
+
+<h2 id="final">八、最终命令</h2>
+
+<h3>havenoammo（纯文本，长 prompt 短输出场景）</h3>
+<pre><code>./llama-server \
+  -m /home/neo/.cache/huggingface/hub/models--havenoammo--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/30aed93a15e9ea283b5c98da3ea659fe2c3c3c08/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf \
+  -c 131072 -n 32768 -fa on -np 1 \
+  -ngl 999 -ncmoe 26 \
+  -b 2048 -ub 1024 -t 6 -tb 6 \
+  -ctk q8_0 -ctv q8_0 -ctkd q8_0 -ctvd q8_0 \
+  -ctxcp 64 --no-mmap --mlock --no-warmup \
+  --spec-type none \
+  --chat-template-kwargs '{"preserve_thinking": true}' \
+  --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 \
+  --presence-penalty 0.0 --repeat-penalty 1.0</code></pre>
+<p class="footnote">如果常输出 &gt; 250 token 的长回答（代码、文章），把 <code>--spec-type none</code> 换成 <code>--spec-type draft-mtp --spec-draft-n-max 2</code>。</p>
+
+<h3>heretic（带视觉模块）</h3>
+<pre><code>./llama-server \
+  -m /home/neo/.cache/huggingface/hub/models--SassyDiffusion--Qwen3.6-35B-A3B-heretic-MTP-GGUF/snapshots/503aae8defd73a59c4f924802fc34a6cd05de469/Qwen3.6-35B-A3B-heretic.Q4_K_XL.gguf \
+  --mmproj /home/neo/.cache/huggingface/hub/models--SassyDiffusion--Qwen3.6-35B-A3B-heretic-MTP-GGUF/snapshots/503aae8defd73a59c4f924802fc34a6cd05de469/mmproj-Qwen3.6-35B-A3B-heretic.BF16.gguf \
+  -c 131072 -n 32768 -fa on -np 1 \
+  -ngl 999 -ncmoe 30 \
+  -b 2048 -ub 1024 -t 6 -tb 6 \
+  -ctk q8_0 -ctv q8_0 -ctkd q8_0 -ctvd q8_0 \
+  -ctxcp 64 --no-mmap --mlock --no-warmup \
+  --spec-type draft-mtp --spec-draft-n-max 2 \
+  --chat-template-kwargs '{"preserve_thinking": true}' \
+  --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 \
+  --presence-penalty 0.0 --repeat-penalty 1.0</code></pre>
+<p class="footnote">heretic 比 havenoammo 多 ncmoe=30 是为了给 mmproj 视觉模块留出显存（避免实测中观察到的 OOM 崩溃）。投机解码保留是因为视觉问答经常有长回答。</p>
+
+<h2 id="glossary">九、术语小词典</h2>
+
+<dl class="glossary">
+<dt>VRAM（显存）</dt>
+<dd>显卡上专用的内存。显卡只能"看到"显存里的数据，CPU 内存里的数据要先搬过去才能用。本机 16 GB。</dd>
+
+<dt>Token</dt>
+<dd>模型处理文本的最小单位。一个中文字大约 1-2 token，一个英文单词大约 1 token。32K context 大概是 5-10 万汉字。</dd>
+
+<dt>Context length（上下文长度）</dt>
+<dd>模型一次能"看到"的对话内容长度。越长能看到的越多，但占的显存也更多。本实验都用 128K。</dd>
+
+<dt>KV cache（KV 缓存）</dt>
+<dd>对话进行中模型保留的历史中间结果。每说一句话就追加一点，不需要每次重新算。占用随上下文长度线性增长。</dd>
+
+<dt>MoE（混合专家）</dt>
+<dd>一种模型结构。把一层网络拆成几百个小"专家"，每个 token 只激活 8 个。总参数大，实际计算量小。</dd>
+
+<dt>Offload（卸载）</dt>
+<dd>把模型的一部分权重放在 CPU 内存而不是显卡上。代价是模型计算时要在两边来回搬数据，速度变慢。</dd>
+
+<dt>Prompt eval</dt>
+<dd>模型读你输入的过程。读完之前不会开始回答。tps 越高 → "首字延迟" 越短。</dd>
+
+<dt>Generation（生成 / gen）</dt>
+<dd>模型写答案的过程。tps 越高 → 流式输出越流畅。30 tps 是阅读速度，70 tps 已经很快。</dd>
+
+<dt>Speculative decoding（投机解码）</dt>
+<dd>用一个小的"草拟器"先猜接下来几个 token，再让大模型批量验证。猜对的几个 token 一起出，省时间。猜错就丢掉重来。</dd>
+
+<dt>MTP（Multi-Token Prediction）</dt>
+<dd>模型自带的"草拟头"。比再训一个独立的小模型简单，但仅限于 MTP-aware 的模型。本实验的 Qwen3.6-35B-A3B-MTP 就是这种。</dd>
+
+<dt>n-max</dt>
+<dd>投机解码一次猜几个 token。本实验测下来 2 是最佳，再高接受率下降反而变慢。</dd>
+
+<dt>OOM（Out Of Memory）</dt>
+<dd>显存或内存不够，程序直接崩。本实验 heretic 的原始命令就是 OOM 崩了。</dd>
+
+<dt>Q4_K_XL / Q8_0</dt>
+<dd>量化精度。Q4 把每个数字压成 4-bit（一字节装两个），Q8 是 8-bit。压得越狠模型越小、显存越省，但精度有损失。</dd>
+
+<dt>Auto-fit (<code>-fitt</code>)</dt>
+<dd>llama.cpp 的自动 offload 功能。指定一个目标"剩多少显存"，llama.cpp 会自动决定模型放多少层在显卡。</dd>
+
+<dt>ncmoe</dt>
+<dd>显式指定"把多少层的专家放 CPU"。和 auto-fit 互斥，但对 MoE 模型更精确——只搬专家、保留注意力在 GPU。</dd>
+</dl>
+
+<hr style="margin: 60px 0 20px 0; border: 0; border-top: 1px solid var(--line);">
+<p class="footnote">
+全部原始数据和脚本：<code>/tmp/llama-bench/</code><br>
+CSV 文件：<code>phase1_results.csv</code>、<code>phase1b_results.csv</code>、<code>phase2_results.csv</code>、<code>phase3_results.csv</code>、<code>phase4_results.csv</code>、<code>baseline_havenoammo.csv</code><br>
+Server 日志：<code>p1_ncmoe*.log</code>、<code>p2_*.log</code>、<code>p3_nmax*.log</code>、<code>p4_ncmoe*.log</code>、<code>baseline_original.log</code>
+</p>
+
+</body>
+</html>

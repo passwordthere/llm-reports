@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>三款开源 MoE 模型社区评价证伪报告 · Gemma 4 26B-A4B / Qwen 3.5 / Qwen 3.6 35B-A3B</title>
+<style>
+:root {
+  --bg: #fafbfc;
+  --panel: #ffffff;
+  --text: #2c3e50;
+  --muted: #6b7785;
+  --accent: #1a73e8;
+  --border: #e1e6eb;
+  --code-bg: #f4f6f8;
+  --good: #2f7d4f;
+  --warn: #b8860b;
+  --bad:  #b44a3a;
+  --tier-a: #eaf4ec;
+  --tier-b: #fdf6e3;
+  --tier-c: #f9eceb;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.65;
+  margin: 0;
+  padding: 32px 16px 80px;
+  font-size: 15px;
+}
+.wrap { max-width: 960px; margin: 0 auto; }
+h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  letter-spacing: -0.2px;
+}
+.subtitle {
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 40px 0 12px;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 24px 0 8px;
+  color: var(--text);
+}
+p { margin: 8px 0; }
+code, .mono {
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px 22px;
+  margin: 16px 0;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 8px;
+  font-size: 14px;
+  background: var(--panel);
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: #f5f7f9;
+  font-weight: 600;
+  color: var(--text);
+}
+td.num { text-align: right; font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+.tier-a { background: var(--tier-a); }
+.tier-b { background: var(--tier-b); }
+.tier-c { background: var(--tier-c); }
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-right: 4px;
+  font-weight: 500;
+}
+.tag-good { background: #e3f1e8; color: var(--good); }
+.tag-warn { background: #fcf2dc; color: var(--warn); }
+.tag-bad  { background: #fae5e0; color: var(--bad); }
+.tag-neutral { background: #eef1f4; color: var(--muted); }
+blockquote {
+  border-left: 3px solid var(--border);
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: var(--muted);
+  font-style: italic;
+  background: #f7f9fb;
+}
+.bar-row { display: flex; align-items: center; margin: 4px 0; font-size: 13px; }
+.bar-label { width: 200px; color: var(--muted); }
+.bar {
+  height: 14px;
+  background: var(--accent);
+  border-radius: 2px;
+  margin-right: 8px;
+  opacity: 0.7;
+}
+.bar.alt { background: #5d6d7e; }
+.bar.warn { background: var(--warn); }
+.bar-val { font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: var(--text); }
+ul { margin: 6px 0; padding-left: 22px; }
+li { margin: 3px 0; }
+.legend {
+  font-size: 13px;
+  color: var(--muted);
+  background: #f7f9fb;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin: 8px 0 16px;
+}
+.kbd {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  background: #eef1f4;
+  border: 1px solid #d8dde2;
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.footnote {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 32px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.col2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 720px) { .col2 { grid-template-columns: 1fr; } .bar-label { width: 140px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>三款开源 MoE 模型社区评价证伪报告</h1>
+<div class="subtitle">
+Gemma 4 26B-A4B · Qwen 3.5 35B-A3B · Qwen 3.6 35B-A3B　|　数据范围：2026 年 4 月发布 ~ 2026 年 5 月中旬社区反馈
+</div>
+
+<!-- ============ 证伪方法学 ============ -->
+<h2>一、证伪方法学：为什么大部分社区评价应该被打折</h2>
+
+<div class="card">
+<p>开源 LLM 的社区评价被三种污染严重：① 官方/合作博客的软文（包装成第三方"评测"）；② 没复现条件的 vibes 帖（"感觉变聪明了"）；③ 厂商自报基准（可能训练时见过测试集）。本报告按<b>可证伪等级</b>对每条评价分类，原则：</p>
+<table>
+<tr><th style="width:80px">等级</th><th>判定条件</th><th>处理</th></tr>
+<tr class="tier-a"><td><b>A 级 · 高可证伪</b></td><td>同时给出：① 具体硬件 ② 量化版本 ③ 具体 prompt 或 task ④ 观察输出 ⑤ 与对照组对比，且任何人能在自家机器复跑</td><td>视为<b>事实</b>采纳</td></tr>
+<tr class="tier-b"><td><b>B 级 · 部分可证伪</b></td><td>有具体测试细节，但单一来源、未被第二方复现；或基准分数可信但易被训练集污染</td><td><b>谨慎采纳</b>，标注来源</td></tr>
+<tr class="tier-c"><td><b>C 级 · 不可证伪</b></td><td>"感觉""明显更强""碾压"类形容；没说硬件/量化/prompt；评论者也是发布方的合作生态</td><td><b>舍弃</b>，仅用于了解情绪</td></tr>
+</table>
+<p style="margin-top:10px"><b>核心判别问句</b>：这条评价如果是假的，我能用什么动作把它证伪？如果想不出动作，它就是 C 级。</p>
+</div>
+
+<!-- ============ 三模型事实卡 ============ -->
+<h2>二、三模型基础事实（来自官方页 + 多方复核）</h2>
+
+<table>
+<tr>
+  <th style="width:25%">维度</th>
+  <th>Gemma 4 26B-A4B-it</th>
+  <th>Qwen 3.5 35B-A3B</th>
+  <th>Qwen 3.6 35B-A3B</th>
+</tr>
+<tr>
+  <td>架构</td>
+  <td>MoE，总参 25.2B / 激活 3.8B</td>
+  <td>MoE，总参 35B / 激活 3B</td>
+  <td>MoE，总参 35B / 激活 3B（同架构升级版）</td>
+</tr>
+<tr>
+  <td>上下文</td>
+  <td>256K（hybrid local+global attention）</td>
+  <td>262K 原生，可扩展 ~1M</td>
+  <td>262K（继承 3.5）</td>
+</tr>
+<tr>
+  <td>多模态</td>
+  <td><span class="tag tag-good">是</span>支持图像</td>
+  <td><span class="tag tag-neutral">否</span>纯文本</td>
+  <td><span class="tag tag-good">是</span>多模态</td>
+</tr>
+<tr>
+  <td>许可</td>
+  <td>Apache 2.0</td>
+  <td>Apache 2.0</td>
+  <td>Apache 2.0</td>
+</tr>
+<tr>
+  <td>发布时间</td>
+  <td>2026-04 初</td>
+  <td>2026-03（早于另两者）</td>
+  <td>2026-04-16</td>
+</tr>
+<tr>
+  <td>消费级硬件门槛</td>
+  <td>RTX 3090/4090 + Q4 ≈ 18 GB</td>
+  <td>RTX 3090/4090 + Q4 ≈ 22 GB</td>
+  <td>Q3_K_M 16.6 GB 可塞 16GB 卡；Q4_K_XL 22.4 GB</td>
+</tr>
+</table>
+
+<!-- ============ A级证据汇总 ============ -->
+<h2>三、A 级证据：可复现的社区报告</h2>
+
+<div class="legend">
+判定标准：报告人指明<b>硬件、量化、prompt、对照组</b>，并提供了 issue/blog 中的具体配置文件或截屏。读者可以拿同一份配置跑出同样结果。
+</div>
+
+<h3>A1 · Gemma 4 26B-A4B：MoE 速度优势是真的</h3>
+<div class="card">
+<p><b>来源</b>：Hacker News 评论（id=47616761，用户 GistNoesis）；XDA Developers 评测</p>
+<p><b>设置</b>：RTX 4090 24GB，llama.cpp + GGUF Q4</p>
+<table>
+<tr><th>对照</th><th>吞吐</th></tr>
+<tr><td>Gemma 4 31B（dense）</td><td class="num">~5 tok/s</td></tr>
+<tr><td>Gemma 4 26B-A4B（MoE，激活 3.8B）</td><td class="num">~150 tok/s</td></tr>
+<tr><td>Qwen 3.5 35B-A3B（MoE，激活 3B）</td><td class="num">~100 tok/s</td></tr>
+</table>
+<p><b>因果</b>：解码速度卡在<b>每个 token 要从显存读多少权重</b>，所以决定速度的是激活参数而不是总参数。3.8B × 4bit ≈ 1.9 GB/token，4090 带宽 ~1 TB/s，理论上限好几百 tok/s，实测 150 tok/s 完全合理。</p>
+<p><b>结论</b>：<span class="tag tag-good">真</span> 这是 MoE 架构的直接物理后果，<b>不是模型质量信号</b>——别拿"我的 26B-A4B 跑得飞快"推论"它比 31B 强"。</p>
+</div>
+
+<h3>A2 · Qwen 3.5 35B-A3B：MLX 4bit 多轮工具调用退化（GitHub Issue #1011）</h3>
+<div class="card">
+<p><b>来源</b>：<a href="https://github.com/ml-explore/mlx-lm/issues/1011">ml-explore/mlx-lm Issue #1011</a></p>
+<p><b>设置</b>：Mac Studio M4 Max 128GB，macOS 15.4，mlx-community 4bit / 8bit checkpoint，70 轮多轮 tool-calling 对话</p>
+<table>
+<tr><th>变体</th><th>退化轮次</th><th>表现</th></tr>
+<tr><td>mlx-community 4bit</td><td class="num">第 5 轮</td><td>不再输出结构化 tool_use block，退化为纯文本 <code>[Tool call: search_files(...)]</code></td></tr>
+<tr><td>mlx-community 8bit</td><td class="num">第 13 轮</td><td>同上</td></tr>
+<tr><td>GGUF Q4_K_XL（llama.cpp）</td><td class="num">70/70</td><td>结构化输出全程稳定</td></tr>
+<tr><td>云端 FP（满精度）</td><td class="num">70/70</td><td>结构化输出全程稳定</td></tr>
+</table>
+<p><b>因果</b>：mlx 框架在 KV cache 量化路径上有 bug → 长上下文里"开 tool_use block"的低概率 token 被压平 → 模型转而采样高频替代（人话写法）。同模型换 llama.cpp 完全正常说明<b>不是权重的锅</b>。</p>
+<p><b>结论</b>：<span class="tag tag-good">真</span> 但责任在框架/量化路径，不是基座模型本身。<b>Mac 用户用 Qwen 系列做 agentic 任务请避开 mlx-community 量化</b>，走 GGUF 或全精度。</p>
+</div>
+
+<h3>A3 · Qwen 3.6 35B-A3B：vLLM 上 looping bug（生产环境）</h3>
+<div class="card">
+<p><b>来源</b>：<a href="https://blog.davidvassallo.me/2026/05/02/psa-hard-lessons-learned-with-qwen3-6-35b-a3b/">David Vassallo 博客 (2026-05-02)</a></p>
+<p><b>设置</b>：自托管 <code>RedHatAI/Qwen3.6-35B-A3B-NVFP4</code> + vLLM nightly + MTP（multi-token prediction 投机解码）开启 + streaming</p>
+<p><b>症状</b>：模型在 tool-call 场景里同一组 token 无限重复。</p>
+<p><b>逐步定位</b>：</p>
+<ul>
+  <li>关闭 MTP（即关闭投机解码）→ loop 不再被流式路径触发</li>
+  <li>把 kv-cache 改 fp8 量化 → "失败也算成功"，量化误差反而阻止 token 锁死</li>
+  <li>最终稳态：<code>repetition_penalty=1.1</code>、<code>presence_penalty=0</code>、开 prefix caching + chunked prefill</li>
+</ul>
+<p><b>因果</b>：vLLM 在 streaming + MTP 路径上的回归 bug，影响所有走该路径的模型，恰好在 Qwen3.6 上被踩到。</p>
+<p><b>结论</b>：<span class="tag tag-warn">真但归属在框架</b></span> 生产用 Qwen 3.6 上 vLLM 必须钉版本，nightly 当前不稳。</p>
+</div>
+
+<h3>A4 · Simon Willison 的 pelican-on-bicycle 测试（笑话基准）</h3>
+<div class="card">
+<p><b>来源</b>：<a href="https://simonwillison.net/2026/Apr/16/qwen-beats-opus/">simonwillison.net (2026-04-16)</a></p>
+<p><b>设置</b>：MacBook Pro M5 + LM Studio + <code>Qwen3.6-35B-A3B-UD-Q4_K_S.gguf</code>（20.9 GB）；对照 Opus 4.7 via API</p>
+<p><b>主测</b>：让模型生成"鹈鹕骑自行车"的 SVG；<b>反过拟合二次验证</b>：换成"火烈鸟骑独轮车"。</p>
+<p><b>结论原话</b>：<i>"I'm giving this one to Qwen 3.6. Opus managed to mess up the bicycle frame!"</i></p>
+<p><b>Simon 自己怎么定调这条证据</b>：<i>"the pelican benchmark has always been meant as a joke ... today, even that loose connection to utility has been broken."</i></p>
+<p><b>结论</b>：<span class="tag tag-warn">真但弱</span> 单一定性样本，作者本人否认它能推论"Qwen 3.6 > Opus 4.7"。是一个<b>反例</b>而非<b>趋势</b>。</p>
+</div>
+
+<!-- ============ B级证据 ============ -->
+<h2>四、B 级证据：可信但单一来源 / 易被污染</h2>
+
+<h3>B1 · 厂商自报基准（双方都打了折）</h3>
+<div class="card">
+<table>
+<tr>
+  <th>基准</th>
+  <th>Gemma 4 26B-A4B</th>
+  <th>Qwen 3.5 35B-A3B</th>
+  <th>Qwen 3.6 35B-A3B</th>
+</tr>
+<tr><td>MMLU-Pro</td><td class="num">82.6</td><td class="num">~78</td><td class="num">—</td></tr>
+<tr><td>AIME 2026</td><td class="num">88.3</td><td class="num">~49 (AIME 2025)</td><td class="num">—</td></tr>
+<tr><td>LiveCodeBench v6</td><td class="num">77.1</td><td class="num">43（v5）</td><td class="num">—</td></tr>
+<tr><td>SWE-bench Verified</td><td class="num">52.0（31B）</td><td class="num">—</td><td class="num">73.4</td></tr>
+<tr><td>Terminal-Bench 2.0</td><td class="num">42.9（31B）</td><td class="num">—</td><td class="num">51.5</td></tr>
+<tr><td>tau2-bench</td><td class="num">68.2</td><td class="num">—</td><td class="num">—</td></tr>
+<tr><td>Arena AI</td><td class="num">1441 ± 9</td><td class="num">1400 ± 6</td><td class="num">—</td></tr>
+</table>
+<p><b>污染怀疑</b>：MMLU/AIME/SWE-bench 公开题集都可能在训练集里出现。<b>LiveCodeBench 因为按发布日期截断、Arena AI 因为是匿名 head-to-head 投票</b>，被认为更抗污染——两者上 Gemma 和 Qwen 都没拉开数量级差距。</p>
+<p><b>结论</b>：<span class="tag tag-warn">谨慎</span> 只看抗污染基准时，两家差距远小于各自 PR 稿里描述的"碾压"。</p>
+</div>
+
+<h3>B2 · "27B dense 反超 35B-A3B"（Qwen 官方自己披露）</h3>
+<div class="card">
+<p>Qwen 在 3.6-27B 发布时给出的官方对比表显示：<b>27B dense 在每一项基准上都超过 35B-A3B</b>，SkillsBench 高 15.5 分、Terminal-Bench 高 7.8 分、SWE-bench 高 3-4 分。</p>
+<p><b>因果</b>：35B-A3B 激活 3B，27B-dense 激活 27B——后者每个 token 看到的有效计算量是 9 倍。MoE 的卖点是"在同等吞吐下追求更高质量上限"，但当你接受 dense 的低吞吐时，它的<b>样本效率</b>仍然更高。</p>
+<p><b>结论</b>：<span class="tag tag-good">真</span> 来源是 Qwen 自家——他们没有动机黑自己的 35B-A3B，这条数据反而异常可信。<b>选 35B-A3B 是用质量换吞吐，不是免费午餐</b>。</p>
+</div>
+
+<h3>B3 · Gemma 4 26B-A4B 的工具调用是原生设计</h3>
+<div class="card">
+<p>XDA Developers 评测者指出，Google 给 Gemma 4 烧了 6 个专门的 special token 进 tokenizer 用于 function calling。这是<b>可证伪的结构性事实</b>：去看 tokenizer 配置就能验证。</p>
+<p><b>含义</b>：这是 Gemma 4 在 tool-bench 上跑得稳的物理原因，而不只是训练数据加得多。但同一作者也明确说：<b>"复杂多步推理和硬核 coding 我还是切去 Qwen3 Coder Next 或云端"</b>——和 SWE-bench 数字一致。</p>
+<p><b>结论</b>：<span class="tag tag-good">真</span> Gemma 4 在<b>工具流稳定性</b>上有架构层优势，但在<b>代码生成能力</b>上输给同尺寸 Qwen。</p>
+</div>
+
+<!-- ============ C级清单 ============ -->
+<h2>五、C 级：不采纳的常见说法</h2>
+
+<table>
+<tr><th>声称</th><th>为什么不采纳</th></tr>
+<tr class="tier-c">
+  <td>"Qwen 3.6 是开源里最接近 Opus 4.7 的"</td>
+  <td>只引一个 pelican SVG 案例，Simon 自己都说这个基准是玩笑。要证伪只能把所有 Opus 能做的任务都跑一遍——没人做过。</td>
+</tr>
+<tr class="tier-c">
+  <td>"Gemma 4 26B-A4B 在 24GB 卡上是 DOA"</td>
+  <td>纯情绪发言，作者没列任务、prompt、对照。事实上 150 tok/s 复现可证伪——而该说法没人复跑过。</td>
+</tr>
+<tr class="tier-c">
+  <td>"Qwen 3.6 在 SWE-bench 73.4% 说明它能替代付费 Claude"</td>
+  <td>SWE-bench 已多次曝出训练集污染怀疑。要证伪只能拿 held-out 题集复测——Qwen 没开源他们的去污染流程。</td>
+</tr>
+<tr class="tier-c">
+  <td>"Gemma 4 是 reasoning 模型，强制 think，输出在 reasoning_content 里"</td>
+  <td>这部分是<b>真的</b>，但常被引用成"难用"——其实是 client 配置问题，关掉就行。归在 C 是因为大多数发帖人没说自己关过、就开始抱怨。</td>
+</tr>
+<tr class="tier-c">
+  <td>"Qwen 训了 pelican 的解"</td>
+  <td>Reddit 半玩笑指控，无证据。要证伪要么找出原始训练集（不可能），要么用未公开的新基准复测（Simon 用了 flamingo+unicycle 复测，反指控不成立）。</td>
+</tr>
+</table>
+
+<!-- ============ 真实画像 ============ -->
+<h2>六、综合画像：三个模型实际是什么</h2>
+
+<div class="col2">
+  <div class="card">
+    <h3 style="margin-top:0">Gemma 4 26B-A4B-it</h3>
+    <p><span class="tag tag-good">扎实</span><span class="tag tag-warn">不擅复杂代码</span></p>
+    <p><b>真实定位</b>：日常 chat + 智能家居 + RAG + tool-calling 的"瑞士军刀"，多模态、256K 上下文、函数调用稳定。<b>不</b>是 SOTA 编码模型。</p>
+    <p><b>谁该用</b>：要一个"啥都能干、不太掉链子"的本地大脑。</p>
+    <p><b>已知坑</b>：默认 reasoning trace、MTP 头被官方阉割（限速）。</p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Qwen 3.5 35B-A3B</h3>
+    <p><span class="tag tag-good">有独立验证</span><span class="tag tag-warn">已被 3.6 覆盖</span></p>
+    <p><b>真实定位</b>：纯文本，最早的 Qwen3 系列 MoE 35B 旗舰；mlx-community 量化版有多轮 tool-use 退化 bug，GGUF/全精度无此问题。</p>
+    <p><b>谁该用</b>：已经部署了不想换、或者想要稳定可引用的 baseline。</p>
+    <p><b>已知坑</b>：mlx 4/8bit checkpoint，多轮 tool calling 第 5 / 13 轮起退化。</p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Qwen 3.6 35B-A3B</h3>
+    <p><span class="tag tag-good">编码强</span><span class="tag tag-bad">分数易污染</span></p>
+    <p><b>真实定位</b>：编码与 agentic 任务上目前同尺寸最强开源选项，多模态。SWE-bench 73.4 是真实测出，但抗污染基准上差距收窄。</p>
+    <p><b>谁该用</b>：本地 coding agent / Claude Code 自托管替代。</p>
+    <p><b>已知坑</b>：vLLM nightly streaming+MTP loop bug；早期社区报告多轮 tool 调用偶发遗漏上下文。</p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">3.5 vs 3.6 该选哪个？</h3>
+    <p>如果你只是<b>看跑分</b>：直接 3.6。<br>
+    如果你<b>要稳定的引用基线</b>（论文、对照实验）：3.5 已有发表过的独立验证，3.6 还没有第二方完整复现。<br>
+    如果你<b>用 mlx-lm</b>：等社区把量化路径修了再上 Qwen 任何版本，或走 GGUF。</p>
+  </div>
+</div>
+
+<!-- ============ 核心方法论提炼 ============ -->
+<h2>七、给读者的一句话证伪习惯</h2>
+
+<div class="card">
+<p style="margin:6px 0"><b>看到模型评测先问三句</b>：</p>
+<ol>
+<li><b>"硬件 + 量化 + prompt"三件套缺哪个？</b> 缺一个就是 B 级，缺两个就是 C 级。</li>
+<li><b>基准是公开题集还是抗污染的（LiveCodeBench / Arena / 自己出题）？</b> 公开题集 + 厂商自报，分数无脑减 5-10 分。</li>
+<li><b>报告人和模型方有没有关系？</b> 同生态合作伙伴的"评测"约等于 PR 稿。</li>
+</ol>
+<p style="margin:6px 0">最强的证据形式不是分数，而是 <b>"我用同一台机器、跑同一个 prompt、用 model A 失败、换 model B 成功"</b>——这是一句可以被任何人攻击的话，因此也是值得相信的话。</p>
+</div>
+
+<div class="footnote">
+<b>主要信源</b>（按本报告引用密度排序）：
+<ul>
+<li>Hacker News id=47616761 — Gemma 4 vs Qwen 3.5 用户讨论</li>
+<li>simonwillison.net/2026/Apr/16/qwen-beats-opus/ — pelican-on-bicycle 测试</li>
+<li>blog.davidvassallo.me/2026/05/02/psa-hard-lessons-learned-with-qwen3-6-35b-a3b/ — vLLM looping bug 排查</li>
+<li>github.com/ml-explore/mlx-lm/issues/1011 — Qwen 3.5 MLX 多轮退化复现</li>
+<li>xda-developers.com/gemma-4-not-smartest-local-llm-but-reach-for/ — Gemma 4 实战定位</li>
+<li>artificialanalysis.ai / openrouter.ai / benchlm.ai — 第三方汇总基准</li>
+<li>huggingface.co/google/gemma-4-26B-A4B-it · huggingface.co/Qwen/Qwen3.5-35B-A3B · huggingface.co/Qwen/Qwen3.6-35B-A3B — 官方页</li>
+<li>qwen.ai/blog?id=qwen3.6-27b — Qwen 自报 27B vs 35B-A3B 对比</li>
+<li>novaknown.com/2026/04/17/qwen3-6-35b-a3b/ — "Qwen3.6 unverified" 证伪派观点</li>
+</ul>
+<p>报告生成日期：2026-05-15。模型与框架仍在迭代，A 级证据中的框架 bug 可能已被修复——读者复跑前请核对版本。</p>
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Qwen3.6-35B-A3B v2 实验：三条被证伪的优化假设</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6a6a6a;
+    --accent: #1f6feb;
+    --good: #1a7f37;
+    --bad: #cf222e;
+    --warn: #9a6700;
+    --line: #d0d7de;
+    --soft: #f6f8fa;
+    --code-bg: #f6f8fa;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.7;
+    max-width: 980px;
+    margin: 40px auto;
+    padding: 0 24px;
+  }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  .subtitle { color: var(--muted); margin-bottom: 32px; }
+  h2 { font-size: 22px; margin-top: 48px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 18px; margin-top: 28px; }
+  p, li { font-size: 15px; }
+  .lead {
+    background: var(--soft);
+    border-left: 4px solid var(--accent);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  .key {
+    background: #e6ffec;
+    border-left: 4px solid var(--good);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  .warn {
+    background: #fff5e6;
+    border-left: 4px solid var(--warn);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  code, pre {
+    font-family: "SF Mono", Consolas, "Liberation Mono", monospace;
+    font-size: 13.5px;
+  }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 3px; }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 8px 12px;
+    text-align: left;
+  }
+  th { background: var(--soft); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.winner { background: #e6ffec; }
+  tr.loser { background: #ffebe9; }
+  .toc {
+    background: var(--soft);
+    padding: 14px 24px;
+    border-radius: 6px;
+    margin: 24px 0;
+  }
+  .toc ul { margin: 4px 0; padding-left: 20px; }
+  .toc li { font-size: 14px; }
+  .footnote { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Qwen3.6-35B-A3B v2 实验：三条被证伪的优化假设</h1>
+<p class="subtitle">实验日期：2026-05-14（与 v1 同日延续） &nbsp;·&nbsp; 硬件：RTX 4070 Ti SUPER 16GB + Ryzen 5 5600 + 32GB RAM &nbsp;·&nbsp; llama.cpp build b9140</p>
+
+<div class="lead">
+<strong>一句话总结：</strong>v1 实验找到的 <code>(q8_0/q8_0, ncmoe=30, ub=1024, spec-mtp n_max=2)</code> 已经是这套硬件 + 模型 + 当前 llama.cpp build 的真正最优点。v2 设计的三条"还能再榨"的方向<strong>全部被实测证伪</strong>。本文记录三个错误假设、各自的实测数据，以及为什么这是个值得高兴的负面结果。
+</div>
+
+<p class="footnote">v1 报告：<a href="report.html">report.html</a>（背景、方法、Phase 1-4 调参过程、最终命令）。本文是 v1 之后第二轮实验的独立汇报。</p>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+  <li><a href="#motivation">一、v2 为什么还要试</a></li>
+  <li><a href="#kv">二、主线 1：KV cache 量化 —— q4/q5 触发 CUDA 慢路径</a></li>
+  <li><a href="#cache-reuse">三、主线 2：<code>--cache-reuse</code> —— 帮不上忙的是这个 flag</a></li>
+  <li><a href="#cuda-env">四、主线 3：GGML_CUDA 环境变量 —— Ada 上默认就是最优</a></li>
+  <li><a href="#takeaway">五、综合结论：v1 配置就是最优</a></li>
+</ul>
+</div>
+
+<h2 id="motivation">一、v2 为什么还要试</h2>
+
+<p>v1 实验已经把四个最大旋钮（ncmoe、ub、threads、spec-type）调到了甜点。但还剩三个看似有空间的方向：</p>
+
+<ol>
+  <li><strong>KV cache 量化</strong>：当前 <code>-ctk q8_0 -ctv q8_0</code>，KV 占 ~1.4 GB 显存。如果能压到 q4_0 K，省 700 MB → ncmoe 从 30 降到 28 → 多 2 层专家在 GPU → gen 速度可能 +10-20%。</li>
+  <li><strong>cache-reuse</strong>：<code>--cache-reuse</code> 默认 0（关闭）。这个 flag 启用 KV shifting 算法，多轮对话理论上能几十倍提速。</li>
+  <li><strong>CUDA 环境变量</strong>：<code>GGML_CUDA_FORCE_MMQ=1</code> 在某些架构上能避开 cuBLAS 的 dequant 路径，提速 5-20%。</li>
+</ol>
+
+<p>这三条都是"理论上能赚"，但 v2 全跑下来一条都不成立。下面分别说。</p>
+
+<h2 id="kv">二、主线 1：KV cache 量化 —— q4/q5 触发 CUDA 慢路径</h2>
+
+<h3>假设</h3>
+<p>llama.cpp 社区流传的经验：K 的量化对生成质量影响小（注意力分数被 softmax 平滑化），V 直接进残差流更敏感。所以"先牺牲 K、留 V 高精度"是常见做法。q4_0/q8_0 应该比 q8_0/q8_0 显存少 25% 但速度持平。</p>
+
+<h3>实测</h3>
+<table>
+<tr><th>ctk / ctv</th><th>VRAM peak (MiB)</th><th>Prompt eval</th><th>Wall (40K prompt + 200 gen)</th><th>状态</th></tr>
+<tr><td>f16 / f16</td><td class="num">14598</td><td class="num">821 tps</td><td class="num">53.6 s</td><td>正常但比 q8 慢一点</td></tr>
+<tr class="winner"><td><strong>q8_0 / q8_0</strong></td><td class="num"><strong>13507</strong></td><td class="num"><strong>829 tps</strong></td><td class="num"><strong>53.0 s</strong></td><td><strong>v1 最优</strong></td></tr>
+<tr class="loser"><td>q4_0 / q8_0</td><td class="num">12820</td><td class="num">~37 tps</td><td class="num">超时（&gt;600s, 55% 进度）</td><td>慢 22 倍</td></tr>
+<tr class="loser"><td>q8_0 / q4_0</td><td class="num">12707</td><td class="num">~25 tps</td><td class="num">超时（180s 内 0% 进度）</td><td>慢 33 倍</td></tr>
+<tr class="loser"><td>q5_0 / q5_0</td><td class="num">13709</td><td class="num">~30 tps</td><td class="num">超时（180s 内 0% 进度）</td><td>慢 28 倍</td></tr>
+</table>
+
+<h3>因果链</h3>
+
+<div class="warn">
+<strong>q4_0 K 让 prompt eval 从 829 tps 直接掉到 30-40 tps（22-33× 变慢）。</strong>第一次跑 q4_q8 配置时，10 分钟内 40K prompt 只处理到 55%，被 curl 超时取消。后续两个非对称 / q5 配置同样卡死。
+</div>
+
+<p>原因：llama.cpp 的 CUDA Flash Attention 内核对 KV 量化组合<strong>有 fast-path 限制</strong>。优化好的 mma kernel 只接受几个特定组合（f16/f16、q8_0/q8_0），其它组合（q4_0 K、q5_0 K、q8_0 K + q4_0 V 等）都会走通用的 <strong>dequant → matmul 慢路径</strong>。在 Qwen3-Next 的混合架构里，41 层中只有 10 层是 full attention，但这 10 层是性能热点。一旦 attention 的 K@Q 矩阵乘走慢路径，整次前向就被拖垮。</p>
+
+<h3>结论</h3>
+<p><strong>在 RTX 4070 Ti SUPER + Qwen3-Next 这个组合上，<code>q8_0/q8_0</code> 就是 KV 量化的天花板。</strong>再压一档，速度从 829 tps 跌到 30-40 tps，等于不能用。社区那条"q4 K + q8 V"经验在这套硬件 + 这套模型上不成立。</p>
+
+<h2 id="cache-reuse">三、主线 2：<code>--cache-reuse</code> —— 帮不上忙的是这个 flag</h2>
+
+<h3>假设</h3>
+<p>llama-server 的 <code>--cache-reuse N</code> 默认 0（关闭）。这是<strong>免费的多轮场景提速</strong>——开启后，新 prompt 跟 slot 现有 KV 内容匹配的部分会在 KV 里做数学位移而不是重算。猜测 reuse=256 应该让连续问相似问题的 prompt eval 时间从几秒降到亚秒级。</p>
+
+<h3>实测设计</h3>
+<p>构造三轮对话：</p>
+<ol>
+  <li>请求 1：5K token 共享前缀 + 简单问题 1（~30 token 尾巴）</li>
+  <li>请求 2：<strong>同样的 5K 前缀</strong> + 简单问题 2</li>
+  <li>请求 3：<strong>同样的 5K 前缀 + 200 token 额外上下文</strong> + 简单问题 3</li>
+</ol>
+<p>扫描 <code>--cache-reuse</code> ∈ {0, 256, 1024}。每轮在 server 端重新启动以确保 cache 状态对齐。</p>
+
+<h3>结果</h3>
+<table>
+<tr><th>cache-reuse</th><th>Turn 1: prompt_n / wall</th><th>Turn 2: prompt_n / wall</th><th>Turn 3: prompt_n / wall</th></tr>
+<tr><td>0（默认）</td><td class="num">4970 / 11.1s</td><td class="num"><strong>1026 / 4.5s</strong></td><td class="num"><strong>1083 / 4.5s</strong></td></tr>
+<tr><td>256（推荐值）</td><td class="num">4970 / 11.9s</td><td class="num">1026 / 3.8s</td><td class="num">1083 / 4.3s</td></tr>
+<tr><td>1024</td><td class="num">4970 / 9.2s</td><td class="num">1026 / 3.7s</td><td class="num">1083 / 4.3s</td></tr>
+</table>
+
+<p>三档 <code>--cache-reuse</code> 的 <strong>Turn 2/3 prompt_n 完全相同</strong>：1026 和 1083。说明命中前缀复用的根本不是 <code>--cache-reuse</code>。</p>
+
+<h3>因果链</h3>
+
+<div class="key">
+<strong>真正起作用的是客户端 payload 里的 <code>cache_prompt: true</code>（已经默认开了）。</strong>
+<br><br>
+<code>cache_prompt</code> 处理严格前缀复用：新请求的 prefix 跟 slot 的 KV 内容 token-by-token 一致，那部分直接保留，只算后面的尾巴。Turn 2 跟 Turn 1 共享 5K 前缀 → 5K 几乎全保留，只算 ~30 token 的新尾巴。这就是为什么 Turn 2 wall 从 11 秒掉到 4.5 秒。
+<br><br>
+<code>--cache-reuse N</code> 处理的是<strong>不同的场景</strong>：non-strict prefix matching（KV shifting）。比如新 prompt 改了 system 中间一段（破坏了前缀严格匹配），但用户问题相同。这时 <code>cache_prompt</code> 帮不上忙、但 KV shifting 算法可以做"窗口滑动"找到子串匹配。我们的多轮聊天场景是严格前缀，用不到这条路径。
+</div>
+
+<h3>插曲：Turn 2 为什么不是 prompt_n=0？</h3>
+<p>Turn 2 共享了 5K 前缀，但 prompt_n 还有 1026 不是 0。原因：<code>-ub 1024</code> 让 KV cache 按 1024-token 块对齐。前缀+新尾巴的分歧点（"\n\nQ: Now list..." vs "\n\nQ: Summarize..."）落在最后一块的中间 → 整块从 4096 之后作废重算。4970 - 4096 + 新尾巴 ≈ 1026。</p>
+
+<p>这是分块对齐的代价，跟 cache 算法无关，调小 <code>-ub</code> 能减少这个损失（但会让 prompt eval 慢 60%——不值得）。</p>
+
+<h3>结论</h3>
+<ul>
+  <li><strong>OpenAI-compatible 客户端默认开 <code>cache_prompt</code></strong>，多轮聊天已经免费拿到 6× prompt eval 提速</li>
+  <li><strong><code>--cache-reuse</code> 这个 server flag 对本场景没用</strong>，保持默认 0 即可</li>
+  <li>真的想看 KV shifting 起作用需要构造"system prompt 中间被改"的场景，本实验没测，但日常聊天场景碰不到</li>
+</ul>
+
+<h2 id="cuda-env">四、主线 3：GGML_CUDA 环境变量 —— Ada 上默认就是最优</h2>
+
+<h3>假设</h3>
+<p>RTX 4070 Ti SUPER 是 compute capability 8.9（Ada Lovelace）。llama.cpp 的 CUDA 后端有几个运行时 flag，最优值跟架构相关，默认值未必对 Ada 最佳。社区在 Turing/Ampere 上的经验是 <code>GGML_CUDA_FORCE_MMQ=1</code> 能避开 cuBLAS 的 dequant 路径，提速 5-20%。</p>
+
+<h3>实测</h3>
+<table>
+<tr><th>环境变量</th><th>Prompt tps</th><th>Gen tps</th><th>Wall (40K + 200)</th><th>Draft 接受率</th><th>结论</th></tr>
+<tr class="winner"><td><strong>默认</strong></td><td class="num"><strong>802</strong></td><td class="num"><strong>46.1</strong></td><td class="num"><strong>55.0 s</strong></td><td class="num">99.1%</td><td><strong>基线 ⭐</strong></td></tr>
+<tr class="loser"><td>GGML_CUDA_FORCE_MMQ=1</td><td class="num">793 (-1%)</td><td class="num">41.6 (-10%)</td><td class="num">56.1 s</td><td class="num">97.3%</td><td>gen 明显变慢</td></tr>
+<tr><td>GGML_CUDA_FORCE_CUBLAS=1</td><td class="num">795</td><td class="num">45.8</td><td class="num">55.5 s</td><td class="num">98.2%</td><td>等价默认</td></tr>
+<tr><td>GGML_CUDA_DISABLE_GRAPHS=1</td><td class="num">792</td><td class="num">46.5</td><td class="num">55.6 s</td><td class="num">97.4%</td><td>等价默认</td></tr>
+</table>
+
+<h3>因果链</h3>
+
+<p><strong>FORCE_MMQ 让 gen 慢 10%</strong>：Ada 的 Tensor Cores 对 fp16 mixed-precision 已经高度优化（cuBLAS 默认走的就是 Tensor Core 路径）。MMQ 内核是 INT8 dp4a 路径，绕过 Tensor Cores → 反而更慢。这跟 Turing（无 Tensor Core for INT4）、Ampere（Tensor Core 但 mixed precision 不如 Ada）时代的经验<strong>相反</strong>。社区那条经验对 Ada 不适用。</p>
+
+<p><strong>FORCE_CUBLAS=1 等于默认</strong>：因为 llama.cpp 在这种 prefill workload 下默认就走 cuBLAS。这条 flag 只是去掉 auto-select 的 override，作用边际。</p>
+
+<p><strong>DISABLE_GRAPHS=1 完全没差</strong>：这是个意外但合理的发现 —— 说明<strong>这个配置下 CUDA Graphs 本来就没启用</strong>。MoE 的动态路由 + speculative decoding 的多分支 + flash attention 的可变 batch，三者一叠加，llama.cpp 自动停掉了 graph capture（因为 graph 要求每次执行的 kernel sequence 完全相同）。所以打开打关都一样。</p>
+
+<h3>结论</h3>
+<p><strong>不要碰 CUDA env vars，让 llama.cpp 自己选路径。</strong>FORCE_MMQ 是 Ada 上的反向优化，剩下两个 flag 改了等于没改。如果未来换到 Hopper 或 Blackwell，这部分需要重测——架构变了内核路径选择规则也变。</p>
+
+<h2 id="takeaway">五、综合结论：v1 配置就是最优</h2>
+
+<p>三条主线全负面：</p>
+
+<table>
+<tr><th>v2 主线</th><th>假设</th><th>实测结果</th><th>影响</th></tr>
+<tr class="loser"><td>KV cache 量化</td><td>q4_0 K 省 700 MB 显存给更多专家</td><td>触发 CUDA FA 慢路径，prompt 22-33× 变慢</td><td>q8_0/q8_0 已是天花板</td></tr>
+<tr class="loser"><td>cache-reuse</td><td>多轮对话几十倍提速</td><td>reuse 0/256/1024 prompt_n 完全相同</td><td>真正生效的是客户端 cache_prompt:true（默认开）</td></tr>
+<tr class="loser"><td>GGML_CUDA env</td><td>FORCE_MMQ 提速 5-20%</td><td>gen 慢 10%，其它 flag 无影响</td><td>Ada 默认路径已是最优</td></tr>
+</table>
+
+<div class="key">
+<strong>v1 的命令就是这套硬件 + 模型 + llama.cpp build b9140 的真正帕累托最优点：</strong>
+<pre><code>-ngl 999 -ncmoe 30 -b 2048 -ub 1024 -t 6 -tb 6 \
+-ctk q8_0 -ctv q8_0 -ctkd q8_0 -ctvd q8_0 \
+--spec-type draft-mtp --spec-draft-n-max 2</code></pre>
+完整命令见 <a href="report.html#final">v1 报告第八节</a>。
+</div>
+
+<h3>"全负面"为什么是好消息</h3>
+<ul>
+  <li><strong>不用再花时间调 server 参数</strong>。剩下的旋钮我都试过了，没有更多空间。</li>
+  <li>剩下的提速来源只有：
+    <ul>
+      <li>换硬件（更大显存 → 更多专家直接在 GPU，不需要 ncmoe）</li>
+      <li>等 llama.cpp 出新内核（比如 q4 KV cache 的 Tensor Core 实现 —— 那时 KV 量化会变成净收益）</li>
+      <li>换模型量化（Q5_K_M、Q6_K）—— 但这是质量实验不是性能实验</li>
+    </ul>
+  </li>
+  <li>客户端层面唯一的免费午餐：<strong>确保用 <code>cache_prompt: true</code></strong>（OpenAI shim 默认就是），多轮对话直接 6× prompt 提速。</li>
+</ul>
+
+<h3>未来需要重测的场景</h3>
+<p>这次结论<strong>绑定到当前硬件 + 模型 + 软件版本</strong>。如果以下任一变化，相关结论需要重测：</p>
+<ul>
+  <li>换显卡到非 Ada 架构 → 主线 3（CUDA env vars）全部重测</li>
+  <li>llama.cpp 升级且 release notes 提到 KV cache 量化优化 → 主线 1 重测</li>
+  <li>换模型架构（非 Qwen3-Next 的 SSM + MoE 混合）→ 主线 1 可能不同</li>
+  <li>真的有用到非严格前缀的多轮场景（system prompt 频繁变更）→ 主线 2 需要单独构造场景重测</li>
+</ul>
+
+<hr style="margin: 60px 0 20px 0; border: 0; border-top: 1px solid var(--line);">
+<p class="footnote">
+v2 原始数据见仓库：<code>results/phase5_results.csv</code>（KV 量化 #1，含 f16/f16 基线和 q4/q8 超时记录）· <code>results/phase5b_results.csv</code>（KV 量化 #2，q8/q4 和 q5/q5 也超时）· <code>results/phase6_results.csv</code>（cache-reuse 三档无差异）· <code>results/phase7_results.csv</code>（CUDA env 四组对比）<br>
+脚本：<code>scripts/phase5_kvquant.sh</code>、<code>scripts/phase5b_kvquant.sh</code>、<code>scripts/phase6_cache_reuse.sh</code>、<code>scripts/phase7_cuda_env.sh</code><br>
+Server 日志：<code>server-logs/p5_*.log</code>、<code>server-logs/p5b_*.log</code>、<code>server-logs/p6_*.log</code>、<code>server-logs/p7_*.log</code>
+</p>
+
+</body>
+</html>

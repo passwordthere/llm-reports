@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM 证伪笔记 · Qwen3.6 调优 / MoE 社区评测</title>
+<style>
+:root {
+  --bg: #fafbfc;
+  --panel: #ffffff;
+  --text: #2c3e50;
+  --muted: #6b7785;
+  --accent: #1a73e8;
+  --border: #e1e6eb;
+  --code-bg: #f4f6f8;
+  --good: #2f7d4f;
+  --warn: #b8860b;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.65;
+  margin: 0;
+  padding: 40px 16px 80px;
+  font-size: 15px;
+}
+.wrap { max-width: 880px; margin: 0 auto; }
+h1 {
+  font-size: 26px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  letter-spacing: -0.3px;
+}
+.tagline {
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 28px;
+}
+.intro {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 14px 18px;
+  margin: 0 0 32px;
+  font-size: 14px;
+  color: var(--text);
+}
+.intro p { margin: 6px 0; }
+.report-list { list-style: none; padding: 0; margin: 0; }
+.report-list li {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px 22px;
+  margin: 14px 0;
+  transition: border-color .15s, box-shadow .15s;
+}
+.report-list li:hover {
+  border-color: #b9c5d2;
+  box-shadow: 0 2px 8px rgba(40,60,90,0.06);
+}
+.report-list a.title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  display: block;
+  margin-bottom: 4px;
+}
+.report-list a.title:hover { color: var(--accent); }
+.report-list .meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 10px;
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+.report-list .summary {
+  font-size: 14px;
+  margin: 6px 0 0;
+}
+.report-list .summary b { color: var(--text); }
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-right: 4px;
+  font-weight: 500;
+  background: #eef1f4;
+  color: var(--muted);
+}
+.tag-q { background: #e8eef9; color: var(--accent); }
+.tag-g { background: #e3f1e8; color: var(--good); }
+.tag-r { background: #fcf2dc; color: var(--warn); }
+.footer {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 48px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>LLM 证伪笔记</h1>
+<p class="tagline">围绕 Qwen3.6-35B-A3B 与同代开源 MoE 的本地实测与社区评价</p>
+
+<div class="intro">
+<p>三份关联报告，主题都是<b>把"听起来很厉害"的说法落到可复现的硬件、量化与 prompt 上</b>。前两份是 RTX 4070 Ti SUPER 上的两轮调优实验（v1 找到稳定 baseline，v2 推翻三条"想当然"的优化假设）；第三份是横向看 Gemma 4 / Qwen 3.5 / Qwen 3.6 的社区评价并按可证伪等级筛选。</p>
+<p>都用 HTML 单文件、inline CSS，可直接保存离线阅读。</p>
+</div>
+
+<ul class="report-list">
+
+  <li>
+    <a class="title" href="report.html">Qwen3.6-35B-A3B 在 16GB 显卡上的 llama-server 调优实验</a>
+    <div class="meta">2026-05-14 · RTX 4070 Ti SUPER 16GB · llama.cpp b9140</div>
+    <div>
+      <span class="tag tag-q">Qwen 3.6</span>
+      <span class="tag tag-g">调优 v1</span>
+      <span class="tag">单卡 16GB</span>
+    </div>
+    <p class="summary">控制变量找出在 16GB 显存下能稳定跑 35B-A3B 的 <b>llama-server</b> 参数组合：哪些旋钮真的影响吞吐、哪些只影响显存占用、哪些是迷信。给出一组可直接复用的 baseline 配置。</p>
+  </li>
+
+  <li>
+    <a class="title" href="report-v2.html">Qwen3.6-35B-A3B v2 实验：三条被证伪的优化假设</a>
+    <div class="meta">2026-05-14（v1 同日延续） · 同硬件</div>
+    <div>
+      <span class="tag tag-q">Qwen 3.6</span>
+      <span class="tag tag-r">调优 v2</span>
+      <span class="tag">证伪</span>
+    </div>
+    <p class="summary">续 v1 之后挑了三条"应该会更快"的优化假设挨个跑：<b>KV cache 量化 q4/q5</b>（触发 CUDA 慢路径反而变慢）、另外两条主线同样未达预期。<b>每条都给出反例数据和因果解释</b>，避免读者再踩同样的坑。</p>
+  </li>
+
+  <li>
+    <a class="title" href="moe-three-models-review.html">三款开源 MoE 模型社区评价证伪报告</a>
+    <div class="meta">2026-05-15 · 数据范围 2026-04 ~ 2026-05 中</div>
+    <div>
+      <span class="tag tag-g">Gemma 4</span>
+      <span class="tag tag-q">Qwen 3.5 / 3.6</span>
+      <span class="tag">社区评价</span>
+    </div>
+    <p class="summary">横向对比 Gemma 4 26B-A4B、Qwen 3.5 / 3.6 35B-A3B 的社区评价。按 <b>A/B/C 三级可证伪度</b>筛选：A 级是带硬件+量化+prompt+对照的复现报告（GitHub issue、个人 blog 排查），C 级是没有复现条件的 vibes 帖。结论里区分"模型本身好"与"框架/量化路径好"。</p>
+  </li>
+
+</ul>
+
+<div class="footer">
+最后更新 2026-05-15 · 单页静态站，源码与报告原文均在本仓库
+</div>
+
+</div>
+</body>
+</html>
