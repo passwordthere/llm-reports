@@ -112,7 +112,7 @@ a { color: var(--accent); }
 <p class="tagline">围绕 Qwen3.6-35B-A3B 与同代开源 MoE 的本地实测与社区评价</p>
 
 <div class="intro">
-<p>三份关联报告，主题都是<b>把"听起来很厉害"的说法落到可复现的硬件、量化与 prompt 上</b>。前两份是 RTX 4070 Ti SUPER 上的两轮调优实验（v1 找到稳定 baseline，v2 推翻三条"想当然"的优化假设）；第三份是横向看 Gemma 4 / Qwen 3.5 / Qwen 3.6 的社区评价并按可证伪等级筛选。</p>
+<p>四份关联报告，主题都是<b>把"听起来很厉害"的说法落到可复现的硬件、量化与 prompt 上</b>。前三份是 RTX 4070 Ti SUPER 上的三轮调优实验（v1 找到稳定 baseline，v2 推翻三条"想当然"的优化假设，v3 再推翻两条 MTP / fit 相关假设）；另一份是横向看 Gemma 4 / Qwen 3.5 / Qwen 3.6 的社区评价并按可证伪等级筛选。</p>
 <p>都用 HTML 单文件、inline CSS，可直接保存离线阅读。</p>
 </div>
 
@@ -141,6 +141,18 @@ a { color: var(--accent); }
   </li>
 
   <li>
+    <a class="title" href="report-v3.html">Qwen3.6-35B-A3B v3 实验：MTP 草稿深度与 --fit 自动显存分配</a>
+    <div class="meta">2026-05-24 · 同硬件 · llama.cpp b9297-b0df4c0cf · 带 mmproj 视觉模型</div>
+    <div>
+      <span class="tag tag-q">Qwen 3.6</span>
+      <span class="tag tag-r">调优 v3</span>
+      <span class="tag">MTP</span>
+      <span class="tag">证伪</span>
+    </div>
+    <p class="summary">v1/v2 之后又冒出两条"还能再榨"的方向：把 MTP 的 <code>--spec-draft-n-max</code> 从 2 调大、或者用 llama.cpp 内置的 <code>--fit</code> 自适应分配。<b>两条同样被实测证伪</b> —— MTP 单 head 架构对深度敏感（n=3 接受率从 0.86 塌到 0.78，反而慢 11%）；<code>--fit</code> 的余量公式不计 mmproj vision encoder 峰值，要么 OOM 要么明显偏慢。顺手挖出 <code>--fit</code> 在用户已设 <code>-ngl/-ncmoe</code> 时静默 abort 的 UX bug。</p>
+  </li>
+
+  <li>
     <a class="title" href="moe-three-models-review.html">三款开源 MoE 模型社区评价证伪报告</a>
     <div class="meta">2026-05-15 · 数据范围 2026-04 ~ 2026-05 中</div>
     <div>
@@ -154,7 +166,7 @@ a { color: var(--accent); }
 </ul>
 
 <div class="footer">
-最后更新 2026-05-15 · 单页静态站，源码与报告原文均在本仓库
+最后更新 2026-05-24 · 单页静态站，源码与报告原文均在本仓库
 </div>
 
 </div>

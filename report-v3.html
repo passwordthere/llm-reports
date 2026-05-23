@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen3.6-35B-A3B v3 实验：MTP 草稿深度与 --fit 自动显存分配</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6a6a6a;
+    --accent: #1f6feb;
+    --good: #1a7f37;
+    --bad: #cf222e;
+    --warn: #9a6700;
+    --line: #d0d7de;
+    --soft: #f6f8fa;
+    --code-bg: #f6f8fa;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.7;
+    max-width: 980px;
+    margin: 40px auto;
+    padding: 0 24px;
+  }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  .subtitle { color: var(--muted); margin-bottom: 32px; }
+  h2 { font-size: 22px; margin-top: 48px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 18px; margin-top: 28px; }
+  p, li { font-size: 15px; }
+  .lead {
+    background: var(--soft);
+    border-left: 4px solid var(--accent);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  .key {
+    background: #e6ffec;
+    border-left: 4px solid var(--good);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  .warn {
+    background: #fff5e6;
+    border-left: 4px solid var(--warn);
+    padding: 16px 20px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  code, pre {
+    font-family: "SF Mono", Consolas, "Liberation Mono", monospace;
+    font-size: 13.5px;
+  }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 3px; }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 8px 12px;
+    text-align: left;
+  }
+  th { background: var(--soft); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.winner { background: #e6ffec; }
+  tr.loser { background: #ffebe9; }
+  .toc {
+    background: var(--soft);
+    padding: 14px 24px;
+    border-radius: 6px;
+    margin: 24px 0;
+  }
+  .toc ul { margin: 4px 0; padding-left: 20px; }
+  .toc li { font-size: 14px; }
+  .footnote { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Qwen3.6-35B-A3B v3 实验：MTP 草稿深度与 <code>--fit</code> 自动显存分配</h1>
+<p class="subtitle">实验日期：2026-05-24 &nbsp;·&nbsp; 硬件：RTX 4070 Ti SUPER 16GB + Ryzen 5 5600 + 32GB RAM &nbsp;·&nbsp; llama.cpp build b9297-b0df4c0cf &nbsp;·&nbsp; 模型：Qwen3.6-35B-A3B-heretic-MTP-GGUF（含 mmproj 视觉模块）</p>
+
+<div class="lead">
+<strong>一句话总结：</strong>v1/v2 之后又冒出两条"还能再榨"的方向：把 MTP 的 <code>--spec-draft-n-max</code> 从 2 调大、或者干脆扔掉手写的 <code>-ngl/-ncmoe</code> 用 llama.cpp 的 <code>--fit</code> 自动分配。<strong>两条同样被实测证伪</strong>。本文记录两个错误假设、各自的实测数据，以及为什么 v1 的 <code>(-ncmoe 30, --spec-draft-n-max 2)</code> 在带视觉模型的工作负载下确实是甜点。
+</div>
+
+<p class="footnote">v1：<a href="report.html">report.html</a>（baseline 调优过程）· v2：<a href="report-v2.html">report-v2.html</a>（KV 量化 / cache-reuse / CUDA env 三条被证伪的假设）。本文是 v1/v2 之后第三轮独立实验。</p>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+  <li><a href="#motivation">一、v3 为什么还要试</a></li>
+  <li><a href="#mtp">二、主线 1：<code>--spec-draft-n-max</code> 调大 —— MTP 接受率塌方</a></li>
+  <li><a href="#fit">三、主线 2：<code>--fit</code> 自动分配 —— vision encoder 显存峰值没算进去</a></li>
+  <li><a href="#takeaway">四、综合结论：v1 配置在带视觉的工作负载下依然是最优</a></li>
+</ul>
+</div>
+
+<h2 id="motivation">一、v3 为什么还要试</h2>
+
+<p>v2 已经把 KV 量化、cache-reuse、CUDA env vars 三条主流"应该会更快"的方向全部证伪。但还剩两个有理论依据的空间：</p>
+
+<ol>
+  <li><strong>MTP 草稿深度</strong>：当前 <code>--spec-draft-n-max 2</code>，每次只投机解码 2 个 token。把它调到 3 或 4，理论上单次接受率即使下降，总吞吐还能升 —— 因为一次验证 batch 能 commit 更多 token。</li>
+  <li><strong><code>--fit</code> 自适应显存</strong>：手动 <code>-ngl 999 -ncmoe 30</code> 是 v1 拍脑袋调出来的，绑定到当时的 free VRAM。llama.cpp 内置 <code>--fit</code> + <code>--fit-target</code> 能根据实时可用显存动态决定 MoE 哪些层留 CPU、哪些上 GPU，理论上比手写更接近真实最优。</li>
+</ol>
+
+<p>这两条同样在实测里被否决。下面分别说。</p>
+
+<h2 id="mtp">二、主线 1：<code>--spec-draft-n-max</code> 调大 —— MTP 接受率塌方</h2>
+
+<h3>假设</h3>
+<p>投机解码的常见经验是：草稿深度 n 增加 → 单次接受率降低，但只要"期望接受 token 数 / 草稿成本"还在涨，吞吐就会涨。当前 n=2 时接受率 86–88%（v1 实测），通常 n=3 时仍能保持 75% 以上，所以期望接受数从 ~1.74 升到 ~2.3，理论上能给 decode 加 20–30%。</p>
+
+<h3>实测</h3>
+<p>测试方法：保持 v1 其它参数不变，只改 <code>--spec-draft-n-max</code>，用 25154-token 的真实带图 prompt（4.7 MB JSON，9 条消息含 4 张图）跑 bench.py，warmup 1 + 3 run，cache 命中模式下只测纯 decode。</p>
+
+<table>
+<tr><th><code>--spec-draft-n-max</code></th><th>decode TPS (3-run avg)</th><th>min / max</th><th>draft acceptance</th><th>状态</th></tr>
+<tr class="winner"><td><strong>2（v1 基线）</strong></td><td class="num"><strong>52.5</strong></td><td class="num">52.0 / 52.9</td><td class="num">0.858–0.886</td><td><strong>最优 ⭐</strong></td></tr>
+<tr class="loser"><td>3</td><td class="num">46.5 (-11%)</td><td class="num">42.7 / 48.7</td><td class="num">0.788（恒定）</td><td>慢且方差大</td></tr>
+<tr class="loser"><td>4</td><td class="num">45.7 (-13%)</td><td class="num">42.5 / 48.2</td><td class="num">0.780–0.824</td><td>更慢</td></tr>
+</table>
+
+<h3>因果链</h3>
+
+<div class="warn">
+<strong>n=3/4 不仅没加速，反而比 n=2 慢 11–13%，方差从 ±0.5 t/s 放大到 ±3 t/s。</strong>接受率从 86–88% 直接塌到 78–82%。
+</div>
+
+<p>原因：<strong>MTP 是单 head 模型</strong>，只能精确预测紧邻的下一个 token；再往后第 2、第 3 个草稿 token 都是"在前一个未验证草稿基础上的草稿"，置信度随深度指数级下降。这跟"独立小 draft 模型"投机解码的不一样 —— 独立 draft 模型每个 token 都是新前向的独立预测，深度增加损失温和；MTP 是同一组 hidden state 链式滚出的，深度增加直接撞天花板。</p>
+
+<p>另一层成本：<strong>每多一个草稿 token 都要多跑一次 draft forward</strong>。对你的混合 GPU/CPU 推理布局来说，draft forward 的 latency 不可忽略（KV cache q8_0 + ncmoe 30 这种配置下，draft head 自己也要过一次 attention）。当接受率下降到 0.78，被拒绝的草稿就是<strong>纯浪费的草稿生成时间 + 拖累验证 batch 提前 break</strong>，所以 run-to-run 抖动从 ±0.5 t/s 放大到 ±3 t/s（验证经常在第 1/2 步就 break）。</p>
+
+<h3>结论</h3>
+<p><strong>MTP 的 <code>--spec-draft-n-max</code> 不是越大越好，2 就是这个模型架构的硬上限。</strong>这条"独立 draft model 越深越好"的社区经验不能照搬到 MTP。如果以后换到双 head MTP（Qwen 3.5 Next 路线）或独立 draft 模型，这个上限可以重测；现在保持 n=2。</p>
+
+<h2 id="fit">三、主线 2：<code>--fit</code> 自动分配 —— vision encoder 显存峰值没算进去</h2>
+
+<h3>假设</h3>
+<p>llama.cpp 自带 <code>--fit on</code>（默认就是）+ <code>--fit-target N</code>（每张卡留 N MiB 余量），扫描合理的 ngl / cpu-moe 组合后挑一个"塞满显存但留 N MiB 安全余量"的配置。理论上比 v1 手写的 <code>-ngl 999 -ncmoe 30</code> 更接近实时最优 —— 因为 v1 的数字是当时桌面环境下拍脑袋调的，今天 free VRAM 可能不一样。</p>
+
+<h3>陷阱：手写参数让 <code>--fit</code> 静默 abort</h3>
+
+<div class="warn">
+<strong>v1 命令里同时有 <code>-ngl</code> 和 <code>-ncmoe</code>，<code>--fit</code> 实际上根本没运行。</strong>
+</div>
+
+<p>看 <code>common/fit.cpp:352-374</code>：</p>
+<pre><code>if (mparams-&gt;n_gpu_layers != default_mparams.n_gpu_layers)
+    throw ... ("n_gpu_layers already set by user, abort");
+if (mparams-&gt;tensor_buft_overrides && ...)
+    throw ... ("tensor_buft_overrides already set by user, abort");</code></pre>
+
+<p>只要 <code>-ngl</code> 或 <code>-ncmoe</code> 任一个被显式设置（后者通过 tensor_buft_overrides 起作用），<code>--fit</code> 立刻抛异常，被外层 catch 成一行 <code>LOG_WRN</code>。启动日志只会看到 <code>fitting params to device memory ...</code> 这一行，没有后续 abort 警告（取决于 verbosity 级别），让人误以为 fit 在工作。</p>
+
+<p>所以想真正用 <code>--fit</code> 必须把 <code>-ngl 999 -ncmoe 30</code> 两个全部去掉，只留 <code>--fit-target</code>。</p>
+
+<h3>实测</h3>
+
+<table>
+<tr><th>配置</th><th>decode TPS</th><th>VRAM used / free (MiB)</th><th>状态</th></tr>
+<tr class="winner"><td><strong>手动 <code>-ngl 999 -ncmoe 30</code>（v1）</strong></td><td class="num"><strong>52.5</strong></td><td class="num">~15800 / ~500（实测启动 free VRAM 12554，加载后基本贴边）</td><td><strong>基线 ⭐</strong></td></tr>
+<tr class="loser"><td><code>--fit-target 1500</code></td><td class="num">崩溃</td><td class="num">14822 / 1121</td><td>clip image encode 申请 475 MiB 时 <code>cudaMalloc failed</code> → <code>ggml_abort</code></td></tr>
+<tr class="loser"><td><code>--fit-target 2500</code></td><td class="num">44.8 (-15%)</td><td class="num">13896 / 2047</td><td>跑通但明显比手动慢</td></tr>
+</table>
+
+<h3>因果链</h3>
+
+<p><strong>fit 1500 崩在 vision encoder。</strong>错误堆栈：</p>
+<pre><code>ggml_backend_cuda_buffer_type_alloc_buffer: allocating 475.56 MiB on device 0: cudaMalloc failed: out of memory
+  in clip_image_batch_encode → ggml_backend_sched_alloc_graph → ggml_backend_tensor_alloc → ggml_abort()</code></pre>
+
+<p><code>--fit</code> 算余量时只看 <strong>主模型权重 + KV cache + compute graph 估计</strong>，<strong>不知道 mmproj 的 vision encoder 在 image batch encode 时会一次性申请几百 MiB 临时 buffer</strong>。这个 prompt 里有 4 张图，clip 编码到最大一张时申请 475 MiB，把 fit 给主模型留的 1.5 GiB 余量挤穿（还要算上 KV cache 增长 + cache checkpoint，每个 80–90 MiB）。</p>
+
+<p><strong>fit 2500 跑通但慢 15%。</strong>fit 为了给 vision encoder 多留 2.5 GiB 安全余量，把更多 MoE 层留在 CPU —— VRAM 实际只用了 13896 MiB（比 v1 手动配置贴边的占用还少 ~2 GB）。GPU 留了空、CPU 多干活 → decode 从 52.5 t/s 掉到 44.8 t/s。</p>
+
+<h3>结论</h3>
+
+<div class="key">
+<strong>当前 llama.cpp build 下，<code>--fit</code> 在带 mmproj 的视觉模型上不可用，要么 OOM 要么明显偏慢。</strong>
+<br><br>
+v1 拍脑袋调的 <code>-ngl 999 -ncmoe 30</code> 反而比 <code>--fit</code> 自动选的更激进、更优，原因是 v1 实测时已经把 vision encoder 的峰值显存隐式考虑进去（"加载后能跑通真实带图请求"就是 v1 的验收标准）。<code>--fit</code> 的内部模型还没把 mmproj 算进余量公式。
+</div>
+
+<p>纯文本工作负载（无图、无 mmproj）下 <code>--fit</code> 应该能正常工作，本实验没覆盖这种场景。</p>
+
+<h2 id="takeaway">四、综合结论：v1 配置在带视觉的工作负载下依然是最优</h2>
+
+<p>两条主线全负面：</p>
+
+<table>
+<tr><th>v3 主线</th><th>假设</th><th>实测结果</th><th>影响</th></tr>
+<tr class="loser"><td>MTP <code>spec-draft-n-max</code> 调大</td><td>n=3/4 期望接受 token 更多 → decode 提速 20–30%</td><td>接受率从 0.86 塌到 0.78，decode 反而慢 11–13%</td><td>MTP 单 head 架构对深度敏感，n=2 是硬上限</td></tr>
+<tr class="loser"><td><code>--fit</code> 自动显存分配</td><td>比手写 <code>-ngl/-ncmoe</code> 更接近实时最优</td><td>1500 余量直接崩；2500 余量慢 15%</td><td>fit 公式不计 mmproj vision encoder 峰值</td></tr>
+</table>
+
+<div class="key">
+<strong>v1/v2/v3 三轮调优结论已经收敛。这套硬件 + 模型 + llama.cpp b9297 下的真正帕累托最优点：</strong>
+<pre><code>-ngl 999 -ncmoe 30 -b 2048 -ub 1024 -t 6 -tb 6 \
+-ctk q8_0 -ctv q8_0 -ctkd q8_0 -ctvd q8_0 \
+--spec-type draft-mtp --draft-p-min 0.75 --spec-draft-n-max 2</code></pre>
+完整命令见 <a href="report.html#final">v1 报告第八节</a>。
+</div>
+
+<h3>"全负面"为什么仍然是好消息</h3>
+<ul>
+  <li><strong>v3 又消掉两个可疑旋钮</strong>。三轮下来基本可以宣布"调参完成"，不再花时间扫描参数空间。</li>
+  <li><strong>暴露了 <code>--fit</code> 在带视觉模型场景下的一个真实缺陷</strong>：余量公式不计 vision encoder。这是个上游 issue 候选项（<code>common/fit.cpp:504-532</code> 那段 MoE 处理逻辑里完全没碰 <code>mparams-&gt;use_mmap</code> 之外的多模态分支）。</li>
+  <li><strong>暴露了 <code>--fit</code> 与 <code>-ngl/-ncmoe</code> 互斥时的静默 abort 行为</strong>。verbosity 不够高时用户不会看到任何提示，以为 fit 在跑实际上没跑 —— 这是个 UX bug。</li>
+</ul>
+
+<h3>未来需要重测的场景</h3>
+<p>v3 结论同样<strong>绑定到当前硬件 + 模型 + 软件版本</strong>。如果以下任一变化，相关结论需要重测：</p>
+<ul>
+  <li>升级到能预测多 head 的 MTP 模型（如未来 Qwen 3.7 / 4.x 推出深度 ≥2 的 MTP）→ 主线 1 重测，n 上限可能变大</li>
+  <li>llama.cpp 升级且 release notes 提到 <code>--fit</code> 多模态支持 → 主线 2 重测</li>
+  <li>换非视觉模型（纯 LLM、无 mmproj）→ 主线 2 可能本就成立，本实验未覆盖</li>
+  <li>换显卡到 24 GiB+ 显存 → ncmoe 可大幅降低，<code>--fit</code> 在余量充足时崩溃概率下降，主线 2 的结论可能反转</li>
+</ul>
+
+<hr style="margin: 60px 0 20px 0; border: 0; border-top: 1px solid var(--line);">
+<p class="footnote">
+v3 实验过程对话：调试 <code>/props</code> 显示 <code>speculative.types:none</code> 的根因（tools/server/server-context.cpp:3898-3899 只复制了 sampling 没复制 speculative），实证 MTP 实际在运行（draft acceptance 0.86）；之后顺势对照 <code>--spec-draft-n-max</code> 2/3/4 与 <code>--fit-target</code> 1500/2500。<br>
+Bench 工具：<code>llama-speedtest/bench.py</code>（cache_prompt 保留，warmup 1 + 3 run，n_predict=256，ignore_eos=true，seed=42）<br>
+Server 日志：<code>/tmp/llama_n3.log</code>、<code>/tmp/llama_n4.log</code>、<code>/tmp/llama_fit.log</code>、<code>/tmp/llama_fit2500.log</code>
+</p>
+
+</body>
+</html>
